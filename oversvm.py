@@ -1,4 +1,4 @@
-import os, numpy, overfeat
+import os, numpy as np, overfeat
 
 from multiprocessing import Pool
 from scipy.ndimage import imread
@@ -17,7 +17,7 @@ def read_in_photo(photo_path, dim=231):
     '''
     photo = imread(photo_path)
     photo = imresize(photo, (dim, dim))
-    photo = photo.astype(numpy.float32)
+    photo = photo.astype(np.float32)
 
     # numpy loads photo with colors as last dim, transpose tensor
     h = photo.shape[0]
@@ -39,8 +39,8 @@ def get_photo_files(path):
 def process_through_net(photo, feature_layer=None):
     if not feature_layer:
         feature_layer = overfeat.get_n_layers() - 2
-    likelihoods = copy(overfeat.fprop(photo))
-    features    = copy(overfeat.get_output(feature_layer))
+    likelihoods = copy(overfeat.fprop(photo).flatten())
+    features    = copy(overfeat.get_output(feature_layer).flatten())
     return likelihoods, features
 
 def top_n_predictions(likelihoods, n=1):
@@ -57,9 +57,9 @@ def top_n_predictions(likelihoods, n=1):
     # sort prediction by descending likelihood 
     predictions = sorted(predictions, key=lambda x: -x.likelihood)
 
-    return [overfeat.get_class_name(p.name_index) for p in predictions[0:n]]
+    return [overfeat.get_class_name(pred.name_index) for pred in predictions[0:n]]
 
-def print_predictions(filepaths, likelihoods, n=3):
+def print_overfeat_predictions(filepaths, likelihoods, n=3):
     ''' print 'filename [predictions]' '''
     top_n = [top_n_predictions(likelys, n) for likelys in likelihoods]
 
@@ -74,12 +74,32 @@ if __name__ == '__main__':
     photo_files = get_photo_files(get_photo_path())
     photos = [read_in_photo(path) for path in photo_files]
 
-    # extract photo features by running through overfeat
+    # split photos into training and test
+    test_photo   = photos.pop(-2)
+    train_photos = photos
+    # (TODO don't hard code targets)
+    test_target   = np.array([1])
+    train_targets = np.array([0,0,0,0,0,0,0,0,1,1,1,1,1,1,1])
+    # TODO make this cleaner
+    photo_files.pop(-2)
+
+    # initialize overfeat weights. fast net: 0. large net: 1.
     overfeat.init("./data/default/net_weight_0", 0)
-    # likelihoods, features = zip(*(process_through_net(photo) for photo in photos))
+
+    # concurrently extract photo features and predictions using overfeat
     pool = Pool()
-    likelihoods, features = zip(*pool.map(process_through_net, photos))
+    likelihoods, train_features = [np.array(tup) for tup in zip(*pool.map(process_through_net, train_photos))]
     pool.close()
     pool.join()
 
-    print_predictions(photo_files, likelihoods)
+    # print overfeat predictions
+    print_overfeat_predictions(photo_files, likelihoods)
+
+    # train svm on extracted photo features
+    classifier = svm.SVC()
+    classifier.fit(train_features, train_targets)
+
+    # test classification
+    _, test_features = process_through_net(test_photo)
+    prediction = classifier.predict([test_features])
+    print "coffee mug" if prediction[0] == 0 else "water bottle"
